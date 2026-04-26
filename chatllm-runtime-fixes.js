@@ -8,6 +8,7 @@
   const POLLINATIONS_FOOTER_RE = /\n?\s*-{3,}\s*\n+\s*Support Pollinations\.AI:[\s\S]*$/i;
   const POLLINATIONS_AD_RE = /\n?\s*🌸\s*Ad\s*🌸[\s\S]*?(?:accessible for everyone\.|$)/gi;
   const WEATHER_ERROR_RE = /\b(?:502|bad gateway|weather api|couldn['’]?t return data|try again a bit later)\b/i;
+  const TOOL_PAYLOAD_ERROR_RE = /provider returned only a tool-call payload|retry or turn tools off/i;
   const WTTR_URL_RE = /https?:\/\/wttr\.in\/([^\s)]+)(?:\?[^\s)]*)?/i;
   const SLASH_TOOL_RE = /^\s*\/?([a-zA-Z][\w-]*)\s*(\{[\s\S]*\})\s*$/;
 
@@ -58,7 +59,13 @@
         return "";
       }).join("\n").trim();
     }
-    return content;
+    return typeof content === "string" ? content : "";
+  }
+
+  function parseJsonMaybe(value) {
+    if (!value) return {};
+    if (typeof value === "object") return value;
+    try { return JSON.parse(value); } catch (_) { return {}; }
   }
 
   function parseSlashToolCall(text) {
@@ -72,15 +79,36 @@
     }
   }
 
+  function normalizeToolName(name) {
+    return String(name || "").toLowerCase().replace(/^functions?\./, "").replace(/_/g, "-");
+  }
+
+  function getLastUserText(body) {
+    const messages = Array.isArray(body?.messages) ? body.messages : [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "user") return normalizeContent(messages[i].content || "");
+    }
+    return "";
+  }
+
+  function isWeatherQuery(text) {
+    const value = String(text || "");
+    return /\b(weather|forecast|temperature|temp|how hot|how cold|rain|snow)\b/i.test(value)
+      && /\b(in|near|for|at|today|tomorrow|right now|current|hamburg|nj|new jersey)\b/i.test(value);
+  }
+
   function extractWeatherPlace(query) {
     const raw = String(query || "").trim();
     if (!raw) return "";
-    return raw
-      .replace(/\b(weather|forecast|today|right now|current|currently|temperature|temp)\b/gi, "")
+    const cleaned = raw
+      .replace(/what(?:'s| is)?\s+the\s+/i, "")
+      .replace(/how\s+(?:hot|cold)\s+(?:is|will)\s+it\s+(?:be\s+)?/i, "")
+      .replace(/\b(weather|forecast|today|tomorrow|right now|current|currently|temperature|temp|rain|snow)\b/gi, "")
       .replace(/\s+/g, " ")
-      .replace(/^\s*(in|for|near)\s+/i, "")
+      .replace(/^\s*(in|for|near|at)\s+/i, "")
       .replace(/[?.!]+$/g, "")
       .trim();
+    return cleaned || raw;
   }
 
   function extractPlaceFromWeatherError(text) {
@@ -159,16 +187,38 @@
     }
   }
 
+  async function answerSimpleWebSearch(query) {
+    const q = String(query || "").trim();
+    if (!q) return "I need a search query for that.";
+    if (isWeatherQuery(q)) return answerWeatherQuery(q);
+    try {
+      const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(q)}`;
+      const data = await fetchJsonWithTimeout(url, 7000);
+      if (data?.extract) return `${data.extract}${data.content_urls?.desktop?.page ? `\n\nSource: ${data.content_urls.desktop.page}` : ""}`;
+    } catch (_) {}
+    return `I can't run a full web search in this static app yet, but the search query was: ${q}`;
+  }
+
+  async function executeLocalToolCall(rawCall) {
+    if (!rawCall) return "";
+    const fn = rawCall.function || rawCall;
+    const name = normalizeToolName(fn.name || rawCall.name || rawCall.type);
+    const args = parseJsonMaybe(fn.arguments || rawCall.arguments || rawCall.args || rawCall.input);
+    const query = args.query || args.q || args.location || args.city || args.prompt || "";
+
+    if (["web", "search", "web-search", "browser-search", "search-web"].includes(name)) {
+      return answerSimpleWebSearch(query);
+    }
+    if (["weather", "get-weather", "current-weather"].includes(name)) {
+      return answerWeatherQuery(query || args.place || args.city || "Hamburg, NJ");
+    }
+    return `The model tried to use the ${fn.name || rawCall.name || "unknown"} tool, but ChatLLM cannot run that tool locally yet.`;
+  }
+
   async function executeSlashToolCall(call) {
     if (!call) return null;
     const query = call.args?.query || call.args?.q || call.args?.location || "";
-    if (call.name === "web" && /weather|forecast|temperature|temp/i.test(String(query))) {
-      return answerWeatherQuery(query);
-    }
-    if (call.name === "web") {
-      return `I tried to search the web for “${query || "that"}”, but this browser app can only auto-handle weather tool calls right now.`;
-    }
-    return `I tried to use the ${call.name} tool, but this model returned the tool call as text instead of running it.`;
+    return executeLocalToolCall({ name: call.name, arguments: call.args || { query } });
   }
 
   async function sanitizeAssistantText(text) {
@@ -177,6 +227,9 @@
     if (slashCall) return executeSlashToolCall(slashCall);
     const weatherPlace = extractPlaceFromWeatherError(content);
     if (weatherPlace) return answerWeatherQuery(weatherPlace);
+    if (TOOL_PAYLOAD_ERROR_RE.test(content)) {
+      return "That model tried to use a tool but did not return a normal answer. I stopped showing the raw tool error; try asking again, or use a model/provider with reliable tool support.";
+    }
     return content;
   }
 
@@ -193,13 +246,11 @@
 
       if (message.tool_calls || message.function_call) {
         const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-        const first = toolCalls[0]?.function || message.function_call;
+        const first = toolCalls[0] || message.function_call;
         delete message.function_call;
         delete message.tool_calls;
         if (!message.content) {
-          message.content = first?.name
-            ? `I tried to use the ${first.name} tool, but the provider returned only a tool-call payload. Please retry or turn tools off for this model.`
-            : "I tried to use a tool, but the provider returned only a tool-call payload. Please retry or turn tools off for this model.";
+          message.content = await executeLocalToolCall(first);
         }
       }
     }
@@ -234,22 +285,57 @@
       || value.includes("/v1/completions");
   }
 
-  function sanitizeRequestBody(init) {
-    if (!init || typeof init.body !== "string") return init;
+  function buildChatCompletionResponse(content, model = "chatllm-local-tool") {
+    return new Response(JSON.stringify({
+      id: `chatllm-local-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content } }]
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+    });
+  }
+
+  async function maybeHandleBeforeProvider(url, body) {
+    const lastUserText = getLastUserText(body);
+    if (isWeatherQuery(lastUserText)) {
+      const answer = await answerWeatherQuery(lastUserText);
+      return buildChatCompletionResponse(answer, body?.model || "chatllm-weather");
+    }
+    return null;
+  }
+
+  function sanitizeRequestBody(init, url) {
+    if (!init || typeof init.body !== "string") return { init, body: null };
     try {
       const body = JSON.parse(init.body);
-      if (!body || typeof body !== "object") return init;
+      if (!body || typeof body !== "object") return { init, body: null };
 
-      if (Array.isArray(body.tools) && !body.tool_choice) body.tool_choice = "auto";
+      // The public/free providers used by this static app often return raw tool payloads.
+      // Strip native tool schemas and let ChatLLM handle obvious local tools itself.
+      delete body.tools;
+      delete body.tool_choice;
+      delete body.functions;
+      delete body.function_call;
+
+      const noToolsInstruction = "Do not output raw tool calls, JSON tool payloads, /web commands, function_call, or hidden reasoning. If you cannot access current data, say so normally.";
       if (Array.isArray(body.messages)) {
         body.messages = body.messages
           .filter((msg) => msg && msg.role !== "tool")
           .map((msg) => ({ ...msg, content: normalizeContent(msg.content || "") }));
+        const first = body.messages[0];
+        if (first?.role === "system") {
+          first.content = `${first.content}\n\n${noToolsInstruction}`;
+        } else {
+          body.messages.unshift({ role: "system", content: noToolsInstruction });
+        }
       }
 
-      return { ...init, body: JSON.stringify(body) };
+      return { init: { ...init, body: JSON.stringify(body) }, body };
     } catch (_) {
-      return init;
+      return { init, body: null };
     }
   }
 
@@ -260,10 +346,17 @@
 
     window.fetch = async (input, init = {}) => {
       const url = typeof input === "string" ? input : input?.url;
-      const nextInit = looksLikeChatProvider(url) ? sanitizeRequestBody(init) : init;
-      const response = await originalFetch(input, nextInit);
+      const isChat = looksLikeChatProvider(url);
+      const sanitized = isChat ? sanitizeRequestBody(init, url) : { init, body: null };
 
-      if (!looksLikeChatProvider(url)) return response;
+      if (isChat) {
+        const localResponse = await maybeHandleBeforeProvider(url, sanitized.body);
+        if (localResponse) return localResponse;
+      }
+
+      const response = await originalFetch(input, sanitized.init);
+
+      if (!isChat) return response;
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) return response;
 
@@ -281,15 +374,17 @@
     };
   }
 
-  async function replaceRenderedWeatherOrSlashTool(node, text) {
+  async function replaceRenderedWeatherOrTool(node, text) {
     const slashCall = parseSlashToolCall(text);
     const weatherPlace = extractPlaceFromWeatherError(text);
-    if (!slashCall && !weatherPlace) return false;
-    node.textContent = "Checking weather...";
+    if (!slashCall && !weatherPlace && !TOOL_PAYLOAD_ERROR_RE.test(text)) return false;
+    node.textContent = slashCall || weatherPlace ? "Checking weather..." : "Tool call failed.";
     try {
-      node.textContent = slashCall ? await executeSlashToolCall(slashCall) : await answerWeatherQuery(weatherPlace);
+      if (slashCall) node.textContent = await executeSlashToolCall(slashCall);
+      else if (weatherPlace) node.textContent = await answerWeatherQuery(weatherPlace);
+      else node.textContent = "That provider returned a tool call instead of a normal answer. I disabled native tool schemas for future requests.";
     } catch (_) {
-      node.textContent = "I tried to check the weather, but it failed.";
+      node.textContent = "I tried to run that tool locally, but it failed.";
     }
     return true;
   }
@@ -299,9 +394,9 @@
       if (!node || node.__chatllmSanitized) return;
       const before = node.textContent || "";
       const after = stripThinkingAndToolText(before);
-      if ((parseSlashToolCall(after) || extractPlaceFromWeatherError(after)) && node.children.length === 0) {
+      if ((parseSlashToolCall(after) || extractPlaceFromWeatherError(after) || TOOL_PAYLOAD_ERROR_RE.test(after)) && node.children.length === 0) {
         node.__chatllmSanitized = true;
-        replaceRenderedWeatherOrSlashTool(node, after);
+        replaceRenderedWeatherOrTool(node, after);
         return;
       }
       if (after !== before && node.children.length === 0) node.textContent = after;
