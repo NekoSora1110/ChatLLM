@@ -1,0 +1,17 @@
+{
+  "name": "ChatLLM",
+  "short_name": "ChatLLM",
+  "description": "Local open-model AI workspace with chat, agents, memory, research, canvas, and sandbox tools.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#111315",
+  "theme_color": "#101214",
+  "icons": [
+    {
+      "src": "./assets/chatllm-mark-light.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

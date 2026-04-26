@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101214" />
+    <title>ChatLLM</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./assets/chatllm-mark-light.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div id="authScreen" class="auth-screen">
+      <div class="auth-shell">
+        <div class="auth-brand">
+          <img src="./assets/chatllm-mark-light.png" alt="ChatLLM logo" />
+          <div>
+            <h1>ChatLLM</h1>
+            <p>Open-model workspace, agents, memory, research, canvas, and a browser sandbox.</p>
+          </div>
+        </div>
+        <form id="authForm" class="auth-card">
+          <div class="segmented">
+            <button type="button" class="seg active" data-auth-mode="signin">Sign in</button>
+            <button type="button" class="seg" data-auth-mode="signup">Create account</button>
+          </div>
+          <label>
+            Email
+            <input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com" required />
+          </label>
+          <label>
+            Password
+            <input id="authPassword" type="password" autocomplete="current-password" placeholder="8+ characters" required />
+          </label>
+          <label id="displayNameField" class="hidden">
+            Display name
+            <input id="authName" type="text" autocomplete="name" placeholder="Sora" />
+          </label>
+          <label class="check-row">
+            <input id="rememberLogin" type="checkbox" checked />
+            <span>Auto-login on this device</span>
+          </label>
+          <button class="primary wide" type="submit">
+            <i data-lucide="log-in"></i>
+            <span id="authSubmitLabel">Enter ChatLLM</span>
+          </button>
+          <p id="authNote" class="micro"></p>
+        </form>
+      </div>
+    </div>
+
+    <div id="app" class="app hidden">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <img src="./assets/chatllm-mark-light.png" alt="ChatLLM" />
+          <div>
+            <strong>ChatLLM</strong>
+            <span id="accountEmail">Local account</span>
+          </div>
+          <button id="collapseSidebar" class="icon-btn" title="Collapse sidebar" type="button">
+            <i data-lucide="panel-left-close"></i>
+          </button>
+        </div>
+
+        <button id="newChatBtn" class="action-btn" type="button">
+          <i data-lucide="square-pen"></i>
+          New chat
+        </button>
+        <button id="commandBtn" class="action-btn subtle" type="button">
+          <i data-lucide="terminal-square"></i>
+          Command palette
+        </button>
+
+        <nav class="nav-list" aria-label="Primary">
+          <button class="nav-item active" data-tab="chat" title="Chat" type="button"><i data-lucide="message-square"></i><span>Chat</span></button>
+          <button class="nav-item" data-tab="canvas" title="Canvas" type="button"><i data-lucide="panel-top"></i><span>Canvas</span></button>
+          <button class="nav-item" data-tab="agents" title="Agents" type="button"><i data-lucide="bot"></i><span>Agents</span></button>
+          <button class="nav-item" data-tab="models" title="Model store" type="button"><i data-lucide="store"></i><span>Models</span></button>
+          <button class="nav-item" data-tab="tools" title="Tools" type="button"><i data-lucide="wrench"></i><span>Tools</span></button>
+          <button class="nav-item" data-tab="research" title="Research" type="button"><i data-lucide="search-check"></i><span>Research</span></button>
+          <button class="nav-item" data-tab="memory" title="Memory" type="button"><i data-lucide="brain"></i><span>Memory</span></button>
+          <button class="nav-item" data-tab="sandbox" title="Sandbox" type="button"><i data-lucide="box"></i><span>Sandbox</span></button>
+          <button class="nav-item" data-tab="settings" title="Settings" type="button"><i data-lucide="settings"></i><span>Settings</span></button>
+        </nav>
+
+        <div class="recent-head">
+          <span>Recents</span>
+          <button id="clearChatsBtn" class="ghost tiny" type="button">Clear</button>
+        </div>
+        <div id="chatList" class="chat-list"></div>
+
+        <div class="sidebar-foot">
+          <button id="exportBtn" class="icon-text" type="button"><i data-lucide="download"></i>Export</button>
+          <button id="logoutBtn" class="icon-text" type="button"><i data-lucide="log-out"></i>Logout</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <button id="openSidebar" class="icon-btn desktop-hidden" title="Open sidebar" type="button">
+            <i data-lucide="panel-left-open"></i>
+          </button>
+          <div class="top-title">
+            <strong id="workspaceTitle">Chat</strong>
+            <span id="workspaceSub">Open-model assistant workspace</span>
+          </div>
+          <div class="top-controls">
+            <button id="autoChooseBtn" class="pill active" type="button" title="Auto-select the best configured model">
+              <i data-lucide="sparkles"></i>
+              <span>Autochoose</span>
+            </button>
+            <button id="deepResearchBtn" class="pill" type="button" title="Deep research">
+              <i data-lucide="radar"></i>
+              <span>Research</span>
+            </button>
+            <button id="settingsQuickBtn" class="icon-btn" type="button" title="Settings">
+              <i data-lucide="sliders-horizontal"></i>
+            </button>
+          </div>
+        </header>
+
+        <section id="tab-chat" class="tab-panel active">
+          <div class="chat-layout">
+            <section class="conversation">
+              <div id="welcomePanel" class="welcome">
+                <h2>Hey, ready to build?</h2>
+                <p>Ask anything. Tools, memory, agents, canvas, and research stay ready when you need them.</p>
+                <div class="quick-grid">
+                  <button data-prompt="Make a plan for building a Steam Deck game launcher UI." type="button"><i data-lucide="gamepad-2"></i>Build plan</button>
+                  <button data-prompt="/research latest open source reasoning models for coding" type="button"><i data-lucide="search"></i>Research</button>
+                  <button data-prompt="/canvas Create a HTML dashboard for an AI agent team." type="button"><i data-lucide="layout-template"></i>Canvas</button>
+                  <button data-prompt="/sandbox help" type="button"><i data-lucide="terminal"></i>Sandbox</button>
+                </div>
+              </div>
+              <div id="messages" class="messages"></div>
+              <form id="composer" class="composer">
+                <div id="attachmentTray" class="attachment-tray"></div>
+                <div id="inlineCanvasPanel" class="inline-canvas-panel hidden">
+                  <div class="inline-canvas-head">
+                    <div class="inline-title">
+                      <i data-lucide="panel-top"></i>
+                      <input id="inlineCanvasTitle" placeholder="Canvas title" />
+                    </div>
+                    <div class="inline-actions">
+                      <button id="inlineCanvasImproveBtn" class="mini-action" title="Improve with AI" type="button"><i data-lucide="wand-sparkles"></i></button>
+                      <button id="inlineCanvasPreviewBtn" class="mini-action" title="Preview" type="button"><i data-lucide="eye"></i></button>
+                      <button id="inlineCanvasCloseBtn" class="mini-action" title="Close canvas" type="button"><i data-lucide="x"></i></button>
+                    </div>
+                  </div>
+                  <textarea id="inlineCanvasEditor" spellcheck="false" placeholder="Draft or paste content here. The AI can use this canvas while you chat."></textarea>
+                  <div id="inlineCanvasPreview" class="inline-canvas-preview hidden"></div>
+                </div>
+                <textarea id="promptInput" rows="1" placeholder="Ask anything"></textarea>
+                <div class="composer-row">
+                  <div class="composer-left">
+                    <button id="attachBtn" class="icon-btn" title="Attach text note" type="button"><i data-lucide="plus"></i></button>
+                    <input id="fileInput" class="hidden" type="file" multiple accept="image/*,.txt,.md,.html,.htm,.css,.js,.json,.csv,.xml,.svg,.py,.ts,.tsx,.jsx,.log" />
+                    <button id="toolModeBtn" class="chip icon-chip" title="Tools" type="button"><i data-lucide="wrench"></i><span>Tools</span></button>
+                    <button id="canvasModeBtn" class="chip icon-chip" title="Canvas" type="button"><i data-lucide="panel-top"></i><span>Canvas</span></button>
+                    <select id="modelSelect" class="native-model-select hidden" title="Active model"></select>
+                    <div id="modelPicker" class="model-picker">
+                      <button id="modelPickerButton" class="model-picker-button" type="button" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="model-picker-text">
+                          <strong id="modelPickerLabel">openai-fast</strong>
+                          <small id="modelPickerMeta">Free</small>
+                        </span>
+                        <i data-lucide="chevron-down"></i>
+                      </button>
+                      <div id="modelPickerMenu" class="model-picker-menu" role="listbox"></div>
+                    </div>
+                  </div>
+                  <button id="stopBtn" class="stop hidden" title="Stop response" type="button"><i data-lucide="square"></i></button>
+                  <button id="sendBtn" class="send" title="Send" type="submit"><i data-lucide="arrow-up"></i></button>
+                </div>
+              </form>
+            </section>
+            <aside class="inspector">
+              <div class="status-card">
+                <div class="status-head">
+                  <span>Model</span>
+                  <span id="providerBadge" class="status-dot">Free</span>
+                </div>
+                <strong id="activeModelName">Pollinations openai-fast</strong>
+                <p id="modelReason">Autochoose is ready.</p>
+              </div>
+              <div class="status-card">
+                <div class="status-head">
+                  <span>Agent</span>
+                  <span id="agentCountBadge">0</span>
+                </div>
+                <strong id="activeAgentName">Default assistant</strong>
+                <p id="activeAgentGoal">General ChatLLM assistant with memory and tool access.</p>
+              </div>
+              <div class="status-card">
+                <div class="status-head">
+                  <span>Memory</span>
+                  <button id="memoryJumpBtn" class="ghost tiny" type="button">Open</button>
+                </div>
+                <div id="memoryPeek" class="peek-list"></div>
+              </div>
+              <div class="status-card">
+                <div class="status-head">
+                  <span>Thinking</span>
+                  <span id="thinkingState">Idle</span>
+                </div>
+                <div class="think-row">
+                  <span id="thinkingSprite" class="thinking-orbit"><span></span><span></span><span></span></span>
+                  <p>Code-generated motion, no image sprite.</p>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="tab-canvas" class="tab-panel">
+          <div class="split-workspace">
+            <div class="pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Canvas</h2>
+                  <p>Draft documents, HTML, plans, specs, or code beside the chat.</p>
+                </div>
+                <div class="toolbar">
+                  <button id="canvasNewBtn" class="icon-btn" title="New canvas" type="button"><i data-lucide="file-plus-2"></i></button>
+                  <button id="canvasPreviewBtn" class="icon-btn" title="Preview HTML" type="button"><i data-lucide="eye"></i></button>
+                  <button id="canvasAskBtn" class="icon-btn" title="Ask AI to improve" type="button"><i data-lucide="wand-sparkles"></i></button>
+                </div>
+              </div>
+              <input id="canvasTitle" class="title-input" placeholder="Untitled canvas" />
+              <textarea id="canvasEditor" class="canvas-editor" spellcheck="false"></textarea>
+            </div>
+            <div class="pane preview-pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Preview</h2>
+                  <p>Rendered HTML or markdown notes.</p>
+                </div>
+                <button id="copyCanvasBtn" class="icon-btn" title="Copy canvas" type="button"><i data-lucide="copy"></i></button>
+              </div>
+              <iframe id="canvasFrame" title="Canvas preview"></iframe>
+              <div id="canvasMarkdown" class="markdown-preview"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-agents" class="tab-panel">
+          <div class="page-grid">
+            <div class="pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Agents</h2>
+                  <p>Create as many role-specialized agents as you want. They save locally.</p>
+                </div>
+                <button id="agentNewBtn" class="primary" type="button"><i data-lucide="bot"></i>Create agent</button>
+              </div>
+              <div id="agentList" class="agent-grid"></div>
+            </div>
+            <div class="pane">
+              <h2>Agent builder</h2>
+              <form id="agentForm" class="stack-form">
+                <label>Name<input id="agentName" placeholder="Research lead" /></label>
+                <label>Personality<input id="agentPersonality" placeholder="Direct, careful, curious" /></label>
+                <label>Mission<textarea id="agentMission" rows="5" placeholder="What this agent is supposed to do"></textarea></label>
+                <label>Tools<select id="agentToolPreset" data-custom-select><option>Balanced</option><option>Research heavy</option><option>Coding heavy</option><option>Creative</option><option>Minimal</option></select></label>
+                <button class="primary wide" type="submit"><i data-lucide="save"></i>Save agent</button>
+              </form>
+              <div class="collab-box">
+                <h3>Agent collaboration</h3>
+                <p>Use <code>/agents debate your task</code> in chat to ask selected agents to produce separate viewpoints and a merged answer.</p>
+                <button id="agentCouncilBtn" class="action-btn" type="button"><i data-lucide="users"></i>Run council on current chat</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-models" class="tab-panel">
+          <div class="pane full">
+            <div class="pane-head">
+              <div>
+                <h2>Model Store</h2>
+                <p>Live model discovery for free/no-key, key-based, local, and custom open-source-compatible providers.</p>
+              </div>
+              <div class="toolbar">
+                <button id="refreshModelsBtn" class="primary" type="button"><i data-lucide="refresh-cw"></i>Refresh</button>
+                <input id="modelSearch" class="search-input" placeholder="Search models" />
+              </div>
+            </div>
+            <div class="model-tabs">
+              <button class="seg active" data-model-filter="all" type="button">All</button>
+              <button class="seg" data-model-filter="free" type="button">No-key</button>
+              <button class="seg" data-model-filter="horde" type="button">AI Horde</button>
+              <button class="seg" data-model-filter="pollinations" type="button">Pollinations</button>
+              <button class="seg" data-model-filter="local" type="button">Local</button>
+              <button class="seg" data-model-filter="custom" type="button">Custom</button>
+            </div>
+            <div id="modelGrid" class="model-grid"></div>
+          </div>
+        </section>
+
+        <section id="tab-tools" class="tab-panel">
+          <div class="pane full">
+            <div class="pane-head">
+              <div>
+                <h2>Tools</h2>
+                <p>Enable tool access for agent prompts. Core tools run in-browser; provider-native tool calling depends on the model endpoint.</p>
+              </div>
+              <div class="toolbar">
+                <button id="enableAllTools" class="ghost" type="button">Enable all</button>
+                <button id="disableAllTools" class="ghost" type="button">Disable all</button>
+                <input id="toolSearch" class="search-input" placeholder="Search 100+ tools" />
+              </div>
+            </div>
+            <div id="toolStats" class="tool-stats"></div>
+            <div id="toolGrid" class="tool-grid"></div>
+          </div>
+        </section>
+
+        <section id="tab-research" class="tab-panel">
+          <div class="split-workspace">
+            <div class="pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Deep Research</h2>
+                  <p>Search public sources, read URLs, collect notes, and summarize with the active model.</p>
+                </div>
+              </div>
+              <form id="researchForm" class="research-form">
+                <textarea id="researchQuery" rows="4" placeholder="Research topic"></textarea>
+                <div class="composer-row">
+                  <label class="check-row"><input id="researchUseWeb" type="checkbox" checked />Web sources</label>
+                  <label class="check-row"><input id="researchUseMemory" type="checkbox" checked />Memory</label>
+                  <label class="check-row"><input id="researchCitations" type="checkbox" checked />Citations</label>
+                  <button class="primary" type="submit"><i data-lucide="radar"></i>Run research</button>
+                </div>
+              </form>
+              <div id="sourceList" class="source-list"></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Report</h2>
+                  <p>Research output appears here and can be moved into canvas.</p>
+                </div>
+                <button id="researchToCanvasBtn" class="icon-btn" title="Send to canvas" type="button"><i data-lucide="send"></i></button>
+              </div>
+              <div id="researchReport" class="report"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-memory" class="tab-panel">
+          <div class="page-grid">
+            <div class="pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Memory</h2>
+                  <p>Local long-term memory with tags, importance, search, and auto-recall.</p>
+                </div>
+                <button id="memoryAddBtn" class="primary" type="button"><i data-lucide="plus"></i>Add memory</button>
+              </div>
+              <input id="memorySearch" class="search-input wide" placeholder="Search memory" />
+              <div id="memoryList" class="memory-list"></div>
+            </div>
+            <div class="pane">
+              <h2>Memory controls</h2>
+              <form id="memoryForm" class="stack-form">
+                <label>Memory text<textarea id="memoryText" rows="6" placeholder="A fact, preference, project note, or instruction"></textarea></label>
+                <label>Tags<input id="memoryTags" placeholder="coding, personal, project" /></label>
+                <label>Importance<input id="memoryImportance" type="range" min="1" max="10" value="6" /></label>
+                <button class="primary wide" type="submit"><i data-lucide="save"></i>Save memory</button>
+              </form>
+              <button id="memoryClearBtn" class="danger wide" type="button"><i data-lucide="trash-2"></i>Clear all memories</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-sandbox" class="tab-panel">
+          <div class="split-workspace">
+            <div class="pane terminal-pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Sandbox</h2>
+                  <p>Browser-isolated terminal with a virtual file system and JavaScript execution.</p>
+                </div>
+                <div class="toolbar">
+                  <button id="sandboxResetBtn" class="icon-btn" title="Reset sandbox" type="button"><i data-lucide="rotate-ccw"></i></button>
+                  <button id="sandboxAskBtn" class="icon-btn" title="Ask AI to write command" type="button"><i data-lucide="wand-sparkles"></i></button>
+                </div>
+              </div>
+              <div id="terminalOutput" class="terminal-output"></div>
+              <form id="terminalForm" class="terminal-form">
+                <span>$</span>
+                <input id="terminalInput" autocomplete="off" placeholder="help" />
+              </form>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <div>
+                  <h2>Files</h2>
+                  <p>Virtual sandbox files. Use <code>write file.txt content</code> or <code>run app.js</code>.</p>
+                </div>
+                <button id="sandboxToCanvasBtn" class="icon-btn" title="Copy selected file to canvas" type="button"><i data-lucide="panel-top"></i></button>
+              </div>
+              <div id="sandboxFiles" class="file-list"></div>
+              <textarea id="sandboxFileEditor" class="canvas-editor small" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-settings" class="tab-panel">
+          <div class="settings-grid">
+            <div class="pane">
+              <h2>Assistant behavior</h2>
+              <form id="settingsForm" class="stack-form">
+                <label>AI personality<textarea id="settingPersonality" rows="4"></textarea></label>
+                <label>Response style<select id="settingStyle" data-custom-select><option>Direct</option><option>Detailed</option><option>Creative</option><option>Teacher</option><option>Engineer</option><option>Friendly</option></select></label>
+                <label>Restriction mode<select id="settingRestrictions" data-custom-select><option value="balanced">Balanced safety</option><option value="minimal">Minimal tone restrictions</option><option value="strict">Strict professional</option><option value="roleplay">Roleplay friendly</option></select></label>
+                <label class="check-row"><input id="settingMemory" type="checkbox" />Enable memory auto-save</label>
+                <label class="check-row"><input id="settingAnimations" type="checkbox" />Extra interface animations</label>
+                <button class="primary wide" type="submit"><i data-lucide="save"></i>Save settings</button>
+              </form>
+            </div>
+            <div class="pane">
+              <h2>Providers</h2>
+              <form id="providerForm" class="stack-form">
+                <label>Pollinations API key optional<input id="pollinationsKey" type="password" placeholder="Optional" /></label>
+                <label>AI Horde API key optional<input id="hordeKey" type="password" placeholder="Optional, anonymous may be limited" /></label>
+                <label>Jina Reader/Search key optional<input id="jinaKey" type="password" placeholder="Optional for search endpoint" /></label>
+                <label>Custom OpenAI-compatible base URL<input id="customBaseUrl" placeholder="https://example.com/v1" /></label>
+                <label>Custom API key<input id="customKey" type="password" placeholder="Optional" /></label>
+                <label>Custom model<input id="customModel" placeholder="kimi-k2.6, qwen3-coder, llama..." /></label>
+                <button class="primary wide" type="submit"><i data-lucide="plug"></i>Save providers</button>
+              </form>
+            </div>
+            <div class="pane">
+              <h2>Data</h2>
+              <div class="data-actions">
+                <button id="exportDataBtn" class="action-btn" type="button"><i data-lucide="download"></i>Export all local data</button>
+                <label class="action-btn file-action">
+                  <i data-lucide="upload"></i>
+                  Import data
+                  <input id="importDataInput" type="file" accept="application/json" />
+                </label>
+                <button id="wipeDataBtn" class="danger" type="button"><i data-lucide="trash-2"></i>Wipe this account data</button>
+              </div>
+              <p class="micro">Passwords are salted and hashed locally in IndexedDB. This is a local app database, not a hosted identity service.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="commandDialog" class="command-dialog">
+      <form method="dialog">
+        <div class="command-head">
+          <strong>Command palette</strong>
+          <button class="icon-btn" value="close" type="submit"><i data-lucide="x"></i></button>
+        </div>
+        <input id="commandInput" placeholder="Type a command or tab name" />
+        <div id="commandResults" class="command-results"></div>
+      </form>
+    </dialog>
+
+    <dialog id="appModal" class="app-modal">
+      <form id="modalForm" method="dialog">
+        <div class="modal-head">
+          <div>
+            <strong id="modalTitle">Confirm</strong>
+            <p id="modalMessage"></p>
+          </div>
+          <button id="modalCloseBtn" class="icon-btn" value="cancel" type="button" title="Close"><i data-lucide="x"></i></button>
+        </div>
+        <label id="modalInputWrap" class="modal-input-wrap hidden">
+          <span id="modalInputLabel">Value</span>
+          <input id="modalInput" />
+        </label>
+        <div class="modal-actions">
+          <button id="modalCancelBtn" class="ghost" value="cancel" type="button">Cancel</button>
+          <button id="modalConfirmBtn" class="primary" value="confirm" type="submit">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
