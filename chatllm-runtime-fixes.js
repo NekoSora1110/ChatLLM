@@ -5,6 +5,10 @@
   const THINKING_BLOCK_RE = /<(?:think|thinking|reasoning|analysis|scratchpad)[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|analysis|scratchpad)>/gi;
   const TOOL_BLOCK_RE = /<(?:tool_call|tool_calls|function_call|tool|tool_result)[^>]*>[\s\S]*?<\/(?:tool_call|tool_calls|function_call|tool|tool_result)>/gi;
   const FENCED_TOOL_JSON_RE = /```(?:json)?\s*\{\s*"(?:tool_calls|tool_call|function_call|arguments|name)"[\s\S]*?```/gi;
+  const POLLINATIONS_FOOTER_RE = /\n?\s*-{3,}\s*\n+\s*Support Pollinations\.AI:[\s\S]*$/i;
+  const POLLINATIONS_AD_RE = /\n?\s*🌸\s*Ad\s*🌸[\s\S]*?(?:accessible for everyone\.|$)/gi;
+  const WEATHER_ERROR_RE = /\b(?:502|bad gateway|weather api|couldn['’]?t return data|try again a bit later)\b/i;
+  const WTTR_URL_RE = /https?:\/\/wttr\.in\/([^\s)]+)(?:\?[^\s)]*)?/i;
   const SLASH_TOOL_RE = /^\s*\/?([a-zA-Z][\w-]*)\s*(\{[\s\S]*\})\s*$/;
 
   const WEATHER_CODES = {
@@ -16,9 +20,17 @@
     85: "Light snow showers", 86: "Snow showers", 95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with heavy hail"
   };
 
+  function stripProviderNoise(value) {
+    if (typeof value !== "string") return value;
+    return value
+      .replace(POLLINATIONS_FOOTER_RE, "")
+      .replace(POLLINATIONS_AD_RE, "")
+      .trim();
+  }
+
   function stripThinkingAndToolText(value) {
     if (typeof value !== "string") return value;
-    let text = value
+    let text = stripProviderNoise(value)
       .replace(THINKING_BLOCK_RE, "")
       .replace(TOOL_BLOCK_RE, "")
       .replace(FENCED_TOOL_JSON_RE, "")
@@ -67,20 +79,42 @@
       .replace(/\b(weather|forecast|today|right now|current|currently|temperature|temp)\b/gi, "")
       .replace(/\s+/g, " ")
       .replace(/^\s*(in|for|near)\s+/i, "")
+      .replace(/[?.!]+$/g, "")
       .trim();
   }
 
-  async function answerWeatherQuery(query) {
-    const place = extractWeatherPlace(query) || query;
+  function extractPlaceFromWeatherError(text) {
+    if (!WEATHER_ERROR_RE.test(String(text || ""))) return "";
+    const wttrMatch = String(text).match(WTTR_URL_RE);
+    if (wttrMatch?.[1]) {
+      return decodeURIComponent(wttrMatch[1]).replace(/,/g, ", ").replace(/\+/g, " ").trim();
+    }
+    const queryMatch = String(text).match(/weather\s+(?:in|for)\s+([^.?\n]+)/i);
+    return queryMatch?.[1]?.trim() || "";
+  }
+
+  async function fetchJsonWithTimeout(url, timeoutMs = 7500) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: controller.signal, cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function getOpenMeteoWeather(place) {
     const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1&language=en&format=json`;
-    const geo = await fetch(geoUrl).then((res) => res.ok ? res.json() : null).catch(() => null);
+    const geo = await fetchJsonWithTimeout(geoUrl);
     const loc = geo?.results?.[0];
-    if (!loc) return `I tried to check the weather for ${place}, but I couldn't find that location.`;
+    if (!loc) throw new Error("Location not found");
 
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(loc.latitude)}&longitude=${encodeURIComponent(loc.longitude)}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m,precipitation&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto`;
-    const weather = await fetch(weatherUrl).then((res) => res.ok ? res.json() : null).catch(() => null);
+    const weather = await fetchJsonWithTimeout(weatherUrl);
     const current = weather?.current;
-    if (!current) return `I found ${loc.name}${loc.admin1 ? `, ${loc.admin1}` : ""}, but couldn't load the current weather.`;
+    if (!current) throw new Error("Current weather unavailable");
 
     const condition = WEATHER_CODES[current.weather_code] || "Unknown conditions";
     const name = `${loc.name}${loc.admin1 ? `, ${loc.admin1}` : ""}`;
@@ -91,6 +125,38 @@
     const precip = Number(current.precipitation || 0);
 
     return `In ${name}, it's about ${temp}°F and ${condition.toLowerCase()}. Feels like ${feels}°F, wind around ${wind} mph, humidity ${humidity}%, precipitation ${precip.toFixed(2)} in.`;
+  }
+
+  async function getWttrWeather(place) {
+    const clean = place || "Hamburg, NJ";
+    const wttrUrl = `https://wttr.in/${encodeURIComponent(clean)}?format=j1`;
+    const data = await fetchJsonWithTimeout(wttrUrl, 9000);
+    const current = data?.current_condition?.[0];
+    if (!current) throw new Error("wttr current weather unavailable");
+
+    const area = data?.nearest_area?.[0];
+    const name = [area?.areaName?.[0]?.value || clean, area?.region?.[0]?.value].filter(Boolean).join(", ");
+    const condition = current.weatherDesc?.[0]?.value || "unknown conditions";
+    const temp = Math.round(Number(current.temp_F));
+    const feels = Math.round(Number(current.FeelsLikeF));
+    const wind = Math.round(Number(current.windspeedMiles));
+    const humidity = Math.round(Number(current.humidity));
+    const precip = Number(current.precipInches || 0);
+
+    return `In ${name}, it's about ${temp}°F and ${condition.toLowerCase()}. Feels like ${feels}°F, wind around ${wind} mph, humidity ${humidity}%, precipitation ${precip.toFixed(2)} in.`;
+  }
+
+  async function answerWeatherQuery(query) {
+    const place = extractWeatherPlace(query) || query || "Hamburg, NJ";
+    try {
+      return await getOpenMeteoWeather(place);
+    } catch (_) {
+      try {
+        return await getWttrWeather(place);
+      } catch (_) {
+        return `I tried to check the weather for ${place}, but both weather sources failed. Try again in a bit.`;
+      }
+    }
   }
 
   async function executeSlashToolCall(call) {
@@ -105,16 +171,20 @@
     return `I tried to use the ${call.name} tool, but this model returned the tool call as text instead of running it.`;
   }
 
+  async function sanitizeAssistantText(text) {
+    let content = stripThinkingAndToolText(normalizeContent(text || ""));
+    const slashCall = parseSlashToolCall(content);
+    if (slashCall) return executeSlashToolCall(slashCall);
+    const weatherPlace = extractPlaceFromWeatherError(content);
+    if (weatherPlace) return answerWeatherQuery(weatherPlace);
+    return content;
+  }
+
   async function sanitizeMessage(message) {
     if (!message || typeof message !== "object") return;
 
     if (message.role === "assistant" || !message.role) {
-      let content = stripThinkingAndToolText(normalizeContent(message.content || ""));
-      const slashCall = parseSlashToolCall(content);
-      if (slashCall) {
-        content = await executeSlashToolCall(slashCall);
-      }
-      message.content = content;
+      message.content = await sanitizeAssistantText(message.content || "");
       delete message.reasoning;
       delete message.reasoning_content;
       delete message.thought;
@@ -142,20 +212,12 @@
       for (const choice of payload.choices) {
         await sanitizeMessage(choice.message);
         await sanitizeMessage(choice.delta);
-        if (typeof choice.text === "string") {
-          const stripped = stripThinkingAndToolText(choice.text);
-          const slashCall = parseSlashToolCall(stripped);
-          choice.text = slashCall ? await executeSlashToolCall(slashCall) : stripped;
-        }
+        if (typeof choice.text === "string") choice.text = await sanitizeAssistantText(choice.text);
       }
     }
 
     for (const key of ["text", "response", "output"]) {
-      if (typeof payload[key] === "string") {
-        const stripped = stripThinkingAndToolText(payload[key]);
-        const slashCall = parseSlashToolCall(stripped);
-        payload[key] = slashCall ? await executeSlashToolCall(slashCall) : stripped;
-      }
+      if (typeof payload[key] === "string") payload[key] = await sanitizeAssistantText(payload[key]);
     }
     if (Array.isArray(payload.messages)) {
       for (const message of payload.messages) await sanitizeMessage(message);
@@ -219,14 +281,15 @@
     };
   }
 
-  async function replaceRenderedSlashTool(node, text) {
-    const call = parseSlashToolCall(text);
-    if (!call) return false;
-    node.textContent = "Checking...";
+  async function replaceRenderedWeatherOrSlashTool(node, text) {
+    const slashCall = parseSlashToolCall(text);
+    const weatherPlace = extractPlaceFromWeatherError(text);
+    if (!slashCall && !weatherPlace) return false;
+    node.textContent = "Checking weather...";
     try {
-      node.textContent = await executeSlashToolCall(call);
+      node.textContent = slashCall ? await executeSlashToolCall(slashCall) : await answerWeatherQuery(weatherPlace);
     } catch (_) {
-      node.textContent = `I tried to use the ${call.name} tool, but it failed.`;
+      node.textContent = "I tried to check the weather, but it failed.";
     }
     return true;
   }
@@ -236,12 +299,12 @@
       if (!node || node.__chatllmSanitized) return;
       const before = node.textContent || "";
       const after = stripThinkingAndToolText(before);
-      if (parseSlashToolCall(after) && node.children.length === 0) {
+      if ((parseSlashToolCall(after) || extractPlaceFromWeatherError(after)) && node.children.length === 0) {
         node.__chatllmSanitized = true;
-        replaceRenderedSlashTool(node, after);
+        replaceRenderedWeatherOrSlashTool(node, after);
         return;
       }
-      if (after && after !== before && node.children.length === 0) node.textContent = after;
+      if (after !== before && node.children.length === 0) node.textContent = after;
       node.__chatllmSanitized = true;
     });
   }
