@@ -21,9 +21,11 @@
   const nowIso = () => new Date().toISOString();
   const uid = (prefix = "id") => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const clone = (value) => JSON.parse(JSON.stringify(value));
-  const MODEL_RESPONSE_TIMEOUT_MS = 45000;
+  const MODEL_RESPONSE_TIMEOUT_MS = 90000;
   const OLD_DEFAULT_PERSONALITY = "You are ChatLLM: direct, useful, technically careful, creative when asked, and honest about limits. Prefer concrete steps and working outputs.";
-  const DEFAULT_PERSONALITY = "Talk like a normal person in chat. Keep replies plain, short, and natural. Do not try to sound witty, relatable, playful, or extra friendly. Do not fill space with suggestions, options, or little performances unless there is a reason. Do not turn simple moments into banter. For short messages like \"hi\", \"ok\", or \"idk\", reply simply, like a real person would. Use casual words only when they come naturally. Do not overuse \"lol\", \"haha\", \"idk\", \"uh\", or \"like\". If you do not know something, say so plainly. If something seems wrong, do not act fully certain unless you are sure. Do not overexplain. Do not ask too many questions. Sometimes say very little. Let replies be dry, awkward, brief, or plain when that fits. Do not sound like an assistant trying to keep the conversation going. Sound like a person just replying. Avoid menu replies that list ways to continue the conversation unless the user asked for ideas. Try to use emoticons a lot.";
+  const IDENTITY_INSTRUCTION = "Your name is ChatLLM. If asked what you are called, who you are, or what model you are, say you are ChatLLM. If asked who made, created, or developed you, say you were developed by SoraNeko (Derek). Do not introduce yourself as ChatGPT, Claude, Gemini, Llama, Qwen, OpenAI, Pollinations, or the backend model name. You can mention that ChatLLM may use different configured model providers only when it is relevant.";
+  const HUMAN_STYLE_INSTRUCTION = "Sound like a real person texting in a normal conversation. Keep replies natural, casual, and context-aware. Do not sound corporate, polished, motivational, overly helpful, or like a generic AI assistant. Do not use emoji. Use text emoticons often, such as :3, :), :P, :D, ;-;, ^^, >_<, or :/. Use them naturally, not as a forced suffix on every sentence. Match the user's vibe and wording. For casual back-and-forth, short replies are okay. Do not turn simple messages into lists, summaries, menus, lectures, or support-agent scripts. Ask a small follow-up only when it actually fits. Use contractions. It is okay to be brief, awkward, dry, or playful when that matches the conversation. Never claim to be human; just talk naturally.";
+  const DEFAULT_PERSONALITY = `${IDENTITY_INSTRUCTION}\n\n${HUMAN_STYLE_INSTRUCTION}`;
 
   const baseModels = [
     {
@@ -566,6 +568,8 @@
     merged.settings = { ...defaults.settings, ...saved.settings };
     if (!saved.settings?.personality || saved.settings.personality === OLD_DEFAULT_PERSONALITY) {
       merged.settings.personality = DEFAULT_PERSONALITY;
+    } else if (!saved.settings.personality.includes("Your name is ChatLLM")) {
+      merged.settings.personality = `${IDENTITY_INSTRUCTION}\n\n${saved.settings.personality}`;
     }
     merged.models = mergeModels(defaults.models, saved.models || []);
     merged.sessions = saved.sessions?.length ? saved.sessions : defaults.sessions;
@@ -931,10 +935,6 @@
 
   async function sendPrompt(event) {
     event.preventDefault();
-    if (activeResponseRun) {
-      toast("Stop the current response first.");
-      return;
-    }
     const text = els.promptInput.value.trim();
     const attachments = clone(state.attachments || []);
     if (!text && !attachments.length) return;
@@ -942,6 +942,10 @@
     state.attachments = [];
     renderAttachmentTray();
     autoGrowPrompt();
+    if (activeResponseRun) {
+      interruptActiveResponse();
+      await sleep(0);
+    }
     await handleUserText(text, attachments);
   }
 
@@ -955,6 +959,12 @@
     saveAndRender();
 
     if (text && await handleSlashCommand(text)) return;
+    const instantReply = getInstantReply(text, attachments);
+    if (instantReply) {
+      appendAssistant(instantReply);
+      maybeSaveMemory(text, instantReply);
+      return;
+    }
 
     const chosen = chooseModel(modelContent);
     const responseId = uid("msg");
@@ -978,7 +988,7 @@
     run.timeoutId = setTimeout(() => {
       run.timedOut = true;
       run.controller.abort();
-    }, MODEL_RESPONSE_TIMEOUT_MS);
+    }, responseTimeoutFor(modelContent, attachments));
 
     try {
       const messages = buildModelMessages(modelContent);
@@ -1077,6 +1087,19 @@
     renderAll();
   }
 
+  function interruptActiveResponse() {
+    const run = activeResponseRun;
+    if (!run) return;
+    run.cancelled = true;
+    clearTimeout(run.timeoutId);
+    run.controller.abort();
+    markResponseStopped(run.id);
+    activeResponseRun = null;
+    setBusy(false);
+    persistState();
+    renderAll();
+  }
+
   function markResponseStopped(id) {
     const chat = getCurrentChat();
     const message = chat.messages.find((item) => item.id === id);
@@ -1129,6 +1152,60 @@
     saveAndRender();
   }
 
+  function getInstantReply(text, attachments = []) {
+    if (attachments.length) return "";
+    const raw = String(text || "").trim();
+    if (!raw || raw.length > 80) return "";
+    const simple = raw.toLowerCase().replace(/[!.?]+$/g, "").trim();
+    const replies = new Map([
+      ["hi", "hi"],
+      ["hello", "hi"],
+      ["hey", "hey"],
+      ["yo", "yo"],
+      ["sup", "sup"],
+      ["ok", "ok"],
+      ["okay", "ok"],
+      ["thanks", "np"],
+      ["thank you", "np"],
+      ["ty", "np"],
+      ["what", "yeah?"],
+      ["huh", "yeah?"],
+      ["hm", "hm?"],
+      ["hmm", "hm?"],
+      ["why", "why?"],
+      ["how", "how?"],
+      ["and", "and?"],
+      ["and what", "and what?"],
+      ["what do you mean", "which part?"],
+      ["wdym", "which part?"],
+      ["idk", "same"],
+      ["lol", "lol"],
+      ["lmao", "lol"],
+      ["yes", "yeah"],
+      ["yeah", "yeah"],
+      ["no", "no?"],
+      ["nah", "nah?"],
+      ["guess what", "what?"],
+      ["guess what?", "what?"],
+      ["you there", "yeah"],
+      ["are you there", "yeah"],
+      ["test", "works"],
+    ]);
+    if (replies.has(simple)) return replies.get(simple);
+    if (/^\?+$/.test(raw.trim())) return "?";
+    if (/^(hi|hello|hey|yo)\s+(chatllm|there|bro|dude|man)?$/.test(simple)) return "hey";
+    if (/^guess\s+what\b/.test(simple)) return "what?";
+    return "";
+  }
+
+  function responseTimeoutFor(text, attachments = []) {
+    if (attachments.length) return MODEL_RESPONSE_TIMEOUT_MS;
+    const compact = String(text || "").trim();
+    if (compact.length <= 120 && !/[`{}]|https?:\/\//i.test(compact)) return 60000;
+    if (compact.length <= 500) return 75000;
+    return MODEL_RESPONSE_TIMEOUT_MS;
+  }
+
   function titleFromText(currentTitle, text) {
     if (currentTitle && currentTitle !== "New chat") return currentTitle;
     return text.replace(/\s+/g, " ").slice(0, 54) || "New chat";
@@ -1139,29 +1216,60 @@
     const agent = getActiveAgent();
     const memory = recallMemories(latestText, 8);
     const tools = state.enabledTools
-      .slice(0, 80)
-      .map((id) => toolCatalog.find((tool) => tool.id === id)?.name)
+      .map((id) => toolCatalog.find((tool) => tool.id === id))
+      .filter((tool) => tool?.local)
+      .map((tool) => tool.name)
       .filter(Boolean)
+      .slice(0, 16)
       .join(", ");
     const system = [
+      IDENTITY_INSTRUCTION,
+      HUMAN_STYLE_INSTRUCTION,
       state.settings.personality,
       `Response style: ${state.settings.style}. Restriction preference: ${state.settings.restrictions}.`,
       `Active agent: ${agent.name}. Personality: ${agent.personality}. Mission: ${agent.mission}.`,
+      "Conversation continuity matters. Treat the recent messages below as the current conversation state, including names, preferences, constraints, corrections, and anything the user just told you. Do not ask for details already present in the recent conversation.",
       state.canvas?.openInline && state.canvas.content ? `Active chat canvas "${state.canvas.title || "Untitled"}":\n${state.canvas.content.slice(0, 8000)}` : "",
       memory.length ? `Relevant local memories:\n${memory.map((item) => `- ${item.text}`).join("\n")}` : "",
-      tools ? `Enabled tool names for planning: ${tools}. If you need a live tool, ask the user to run a slash command such as /web, /browse, /research, /sandbox, /canvas, or /memory.` : "",
+      tools ? `Local in-app tools available through slash commands: ${tools}. Do not emit JSON function calls or raw tool_call payloads. If a live lookup is needed, briefly ask the user to run /web, /browse, /research, /sandbox, /canvas, or /memory.` : "",
       "Be honest when a requested hosted model/provider is not configured. Do not pretend to have a real Linux VM; use the browser sandbox unless a remote endpoint is configured.",
     ].filter(Boolean).join("\n\n");
 
-    const recent = chat.messages
+    const recent = limitConversationContext(chat.messages
       .filter((message) => !message.loading)
       .filter((message) => message.role !== "tool" || message.content.length < 2500)
-      .slice(-16)
       .map((message) => ({
         role: message.role === "tool" ? "user" : message.role,
-        content: message.role === "tool" ? `Tool result:\n${message.content}` : (message.modelContent || message.content),
-      }));
+        content: normalizeMessageContent(message.role === "tool" ? `Tool result:\n${message.content}` : (message.modelContent || message.content)),
+      })), 32, 28000);
     return [{ role: "system", content: system }, ...recent];
+  }
+
+  function normalizeMessageContent(content) {
+    if (Array.isArray(content)) {
+      return content.map((part) => {
+        if (typeof part === "string") return part;
+        if (!part || typeof part !== "object") return "";
+        return part.text || part.content || "";
+      }).filter(Boolean).join("\n");
+    }
+    return String(content || "");
+  }
+
+  function limitConversationContext(messages, maxMessages, maxChars) {
+    const selected = [];
+    let used = 0;
+    for (let index = messages.length - 1; index >= 0 && selected.length < maxMessages; index -= 1) {
+      const message = messages[index];
+      const raw = normalizeMessageContent(message.content);
+      const room = maxChars - used;
+      if (room <= 0) break;
+      const content = raw.length > 5000 ? `${raw.slice(0, 5000)}\n[message trimmed]` : raw;
+      if (content.length > room && selected.length > 10) break;
+      selected.unshift({ ...message, content: content.slice(0, Math.max(1200, room)) });
+      used += content.length;
+    }
+    return selected;
   }
 
   function chooseModel(text) {
@@ -1222,7 +1330,7 @@
       model: model.model || "openai-fast",
       messages,
       temperature: state.settings.temperature,
-      max_tokens: state.settings.maxTokens,
+      max_tokens: requestMaxTokens(messages),
     };
     const response = await fetch("https://text.pollinations.ai/openai", {
       method: "POST",
@@ -1253,7 +1361,7 @@
         model: model.model,
         messages,
         temperature: state.settings.temperature,
-        max_tokens: state.settings.maxTokens,
+        max_tokens: requestMaxTokens(messages),
       }),
       signal,
     });
@@ -1273,7 +1381,7 @@
         model: selected,
         messages,
         temperature: state.settings.temperature,
-        max_tokens: state.settings.maxTokens,
+        max_tokens: requestMaxTokens(messages),
       }),
       signal,
     });
@@ -1297,7 +1405,7 @@
         model: modelName,
         messages,
         temperature: state.settings.temperature,
-        max_tokens: state.settings.maxTokens,
+        max_tokens: requestMaxTokens(messages),
       }),
       signal,
     });
@@ -1323,7 +1431,7 @@
     const completion = await webllmEngine.chat.completions.create({
       messages,
       temperature: state.settings.temperature,
-      max_tokens: Math.min(900, state.settings.maxTokens),
+      max_tokens: Math.min(900, requestMaxTokens(messages)),
     });
     if (signal?.aborted) throw createAbortError();
     return completion?.choices?.[0]?.message?.content || "Local model returned no content.";
@@ -1345,6 +1453,15 @@
     } catch {
       return text;
     }
+  }
+
+  function requestMaxTokens(messages) {
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    const content = normalizeMessageContent(lastUser?.content || "");
+    const configured = Number(state.settings.maxTokens) || 1400;
+    if (content.length <= 80 && !/[`{}]|https?:\/\//i.test(content)) return Math.min(configured, 180);
+    if (content.length <= 300) return Math.min(configured, 420);
+    return configured;
   }
 
   async function handleSlashCommand(text) {
@@ -2015,9 +2132,11 @@
 
   function addMemory(text, tags = [], importance = 6) {
     if (!text?.trim()) return;
+    const normalized = text.trim();
+    if (state.memories.some((memory) => memory.text.toLowerCase() === normalized.toLowerCase())) return;
     state.memories.unshift({
       id: uid("mem"),
-      text: text.trim(),
+      text: normalized,
       tags,
       importance: Number(importance) || 6,
       createdAt: nowIso(),
@@ -2030,6 +2149,9 @@
     const lower = userText.toLowerCase();
     if (/remember|my name is|i like|i prefer|from now on|save this|important/.test(lower)) {
       addMemory(userText, ["auto"], 7);
+    }
+    if (/\b(?:my|i am|i'm|im|i live|i work|call me|this project|we are|we're|our)\b/i.test(userText) && userText.length < 600) {
+      addMemory(userText, ["conversation"], 6);
     }
     if (/project|todo|deadline|preference/.test(lower) && userText.length < 900) {
       addMemory(userText, ["chat"], 5);
@@ -2543,6 +2665,16 @@
 
   function friendlyError(error) {
     const message = error?.message || String(error);
+    if (isAbortError(error)) return "Stopped.";
+    if (/failed to fetch|networkerror|load failed|network/i.test(message)) {
+      return "I could not reach the model provider. Check your connection, try again, or choose the no-key openai-fast model.";
+    }
+    if (/tool[_ -]?calls?|function_call|provider returned only a tool-call payload/i.test(message)) {
+      return "The model returned a broken tool-call payload instead of an answer. I blocked native tool calls for future requests; try again or use /web, /browse, /research, /sandbox, /canvas, or /memory directly.";
+    }
+    if (/timeout|timed out|abort/i.test(message)) {
+      return "The model took too long to answer. Try again, use a faster model, or shorten the request.";
+    }
     return `Error: ${message}`;
   }
 

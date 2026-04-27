@@ -1,4 +1,4 @@
-const CACHE = "chatllm-v4-runtime-fixes";
+const CACHE = "chatllm-v11-human-style";
 const LOCAL_ASSETS = [
   "./",
   "./index.html",
